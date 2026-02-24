@@ -1,0 +1,1941 @@
+﻿
+
+============================================================
+FILE: .github\workflows\ci-branch-protection.yml
+============================================================
+name: Protect Main and Staging
+
+on:
+  pull_request:
+    branches:
+      - dev
+      - staging
+      - main
+
+jobs:
+  enforce-protection-rules:
+    name: Enforce branch protection rules
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check base and head branches
+        run: |
+          echo "🔍 Base branch: ${{ github.event.pull_request.base.ref }}"
+          echo "🔍 Head branch: ${{ github.event.pull_request.head.ref }}"
+          
+          BASE="${{ github.event.pull_request.base.ref }}"
+          HEAD="${{ github.event.pull_request.head.ref }}"
+
+          if [ "$BASE" = "staging" ] && [ "$HEAD" != "dev" ]; then
+            echo "❌ Only PRs from 'dev' can be merged into 'staging'."
+            exit 1
+          fi
+
+          if [ "$BASE" = "main" ] && [ "$HEAD" != "staging" ]; then
+            echo "❌ Only PRs from 'staging' can be merged into 'main'."
+            exit 1
+          fi
+
+          echo "✅ Branch protection rules passed."
+
+
+
+============================================================
+FILE: .github\workflows\dev-cd.yml
+============================================================
+name: Publish into SNOWFLAKE DBT DEV
+
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+
+jobs:
+  run-in-container:
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.11
+
+    env:
+      SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_HOST: ${{ vars.SNOWFLAKE_HOST }}
+      SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
+      SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_ROLE }}
+      SNOWFLAKE_PORT: ${{ vars.SNOWFLAKE_PORT }}
+      SNOWFLAKE_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
+      SNOWFLAKE_DATABASE_DEV: ${{ vars.SNOWFLAKE_DATABASE_DEV }}
+      SNOWFLAKE_SCHEMA: ${{ vars.SNOWFLAKE_DEV_SCHEMA }}
+      PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python and install snow cli
+        run: |
+          python -m pip install --upgrade pip
+          pip install --upgrade snowflake-cli-labs
+      
+      - name: Replace placeholders in profiles.yml
+        run: |
+          export DBT_TARGET=dev
+          cp dbt_profiles/cd_profiles.yml ./profiles.yml
+          sed -i "s|{{DBT_TARGET}}|${DBT_TARGET}|g" profiles.yml
+          sed -i "s|{{SNOWFLAKE_ROLE}}|${SNOWFLAKE_ROLE}|g" profiles.yml
+          sed -i "s|{{SNOWFLAKE_WAREHOUSE}}|${SNOWFLAKE_WAREHOUSE}|g" profiles.yml
+          sed -i "s|{{SNOWFLAKE_DATABASE}}|${SNOWFLAKE_DATABASE_DEV}|g" profiles.yml
+          sed -i "s|{{SNOWFLAKE_SCHEMA}}|${SNOWFLAKE_SCHEMA}|g" profiles.yml
+          sed -i "s|{{SNOWFLAKE_USER}}|${SNOWFLAKE_USER}|g" profiles.yml
+          cat profiles.yml
+      
+      - name: Replace DBT_FF env_var with actual database in CI
+        run: |
+          SEARCH="{{ env_var('DBT_FF', 'DEV') }}"
+          REPL="${SNOWFLAKE_DATABASE_DEV}"
+
+          ESCAPED_REPL=$(printf '%s\n' "$REPL" | sed 's/[\/&]/\\&/g')
+
+          sed -i "s|$SEARCH|$ESCAPED_REPL|g" models/Source.yml
+
+          cat models/Source.yml
+
+      - name: Run publish
+        run: |
+          echo "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > private_key.pem
+          snow dbt deploy ${{ vars.DBT_APP_NAME }} \
+            --temporary-connection \
+            --account=${{ vars.SNOWFLAKE_ACCOUNT }} \
+            --host=${{ vars.SNOWFLAKE_HOST }} \
+            --user=${{ vars.SNOWFLAKE_USER }} \
+            --role=${{ vars.SNOWFLAKE_ROLE }} \
+            --port=${{ vars.SNOWFLAKE_PORT }} \
+            --database=${{ vars.SNOWFLAKE_DATABASE_DEV }} \
+            --schema=${{ vars.SNOWFLAKE_DEV_SCHEMA }} \
+            --private-key-path=private_key.pem \
+            --authenticator=SNOWFLAKE_JWT
+
+
+
+============================================================
+FILE: .github\workflows\prod-cd.yml
+============================================================
+name: Publish into SNOWFLAKE DBT PROD
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  run-in-container:
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.11
+
+    env:
+      SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_HOST: ${{ vars.SNOWFLAKE_HOST }}
+      SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
+      SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_ROLE }}
+      SNOWFLAKE_PORT: ${{ vars.SNOWFLAKE_PORT }}
+      SNOWFLAKE_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
+      SNOWFLAKE_DATABASE_PROD: ${{ vars.SNOWFLAKE_DATABASE_PROD }}
+      SNOWFLAKE_SCHEMA: ${{ vars.SNOWFLAKE_PROD_SCHEMA }}
+      PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python and install snow cli
+        run: |
+          python -m pip install --upgrade pip
+          pip install --upgrade snowflake-cli-labs
+      
+      - name: Replace placeholders in profiles.yml
+        run: |
+          export DBT_TARGET=prod
+          cp dbt_profiles/cd_profiles.yml ./profiles.yml
+          sed -i "s|{{DBT_TARGET}}|${DBT_TARGET}|g" profiles.yml
+          sed -i "s|{{SNOWFLAKE_ROLE}}|${SNOWFLAKE_ROLE}|g" profiles.yml
+          sed -i "s|{{SNOWFLAKE_WAREHOUSE}}|${SNOWFLAKE_WAREHOUSE}|g" profiles.yml
+          sed -i "s|{{SNOWFLAKE_DATABASE}}|${SNOWFLAKE_DATABASE_PROD}|g" profiles.yml
+          sed -i "s|{{SNOWFLAKE_SCHEMA}}|${SNOWFLAKE_SCHEMA}|g" profiles.yml
+          sed -i "s|{{SNOWFLAKE_USER}}|${SNOWFLAKE_USER}|g" profiles.yml
+          cat profiles.yml
+
+      - name: Replace DBT_FF env_var with actual database in CI
+        run: |
+          SEARCH="{{ env_var('DBT_FF', 'DEV') }}"
+          REPL="${SNOWFLAKE_DATABASE_PROD}"
+
+          ESCAPED_REPL=$(printf '%s\n' "$REPL" | sed 's/[\/&]/\\&/g')
+
+          sed -i "s|$SEARCH|$ESCAPED_REPL|g" models/Source.yml
+
+          cat models/Source.yml
+
+      - name: Run publish
+        run: |
+          echo "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > private_key.pem
+          snow dbt deploy ${{ vars.DBT_APP_NAME }} \
+            --temporary-connection \
+            --account=${{ vars.SNOWFLAKE_ACCOUNT }} \
+            --host=${{ vars.SNOWFLAKE_HOST }} \
+            --user=${{ vars.SNOWFLAKE_USER }} \
+            --role=${{ vars.SNOWFLAKE_ROLE }} \
+            --port=${{ vars.SNOWFLAKE_PORT }} \
+            --database=${{ vars.SNOWFLAKE_DATABASE_PROD }} \
+            --schema=${{ vars.SNOWFLAKE_PROD_SCHEMA }} \
+            --private-key-path=private_key.pem \
+            --authenticator=SNOWFLAKE_JWT
+
+
+
+============================================================
+FILE: .github\workflows\staging-cd.yml
+============================================================
+name: Publish into SNOWFLAKE DBT STAGING
+
+on:
+  push:
+    branches:
+      - staging
+  workflow_dispatch:
+
+jobs:
+  run-in-container:
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.11
+
+    env:
+      SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_HOST: ${{ vars.SNOWFLAKE_HOST }}
+      SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
+      SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_ROLE }}
+      SNOWFLAKE_PORT: ${{ vars.SNOWFLAKE_PORT }}
+      SNOWFLAKE_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
+      SNOWFLAKE_DATABASE_STAGING: ${{ vars.SNOWFLAKE_DATABASE_STAGING }}
+      SNOWFLAKE_SCHEMA: ${{ vars.SNOWFLAKE_STAGING_SCHEMA }}
+      PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python and install snow cli
+        run: |
+          python -m pip install --upgrade pip
+          pip install --upgrade snowflake-cli-labs
+      
+      - name: Replace placeholders in profiles.yml
+        run: |
+          export DBT_TARGET=staging
+          cp dbt_profiles/cd_profiles.yml ./profiles.yml
+          sed -i "s|{{DBT_TARGET}}|${DBT_TARGET}|g" profiles.yml
+          sed -i "s|{{SNOWFLAKE_ROLE}}|${SNOWFLAKE_ROLE}|g" profiles.yml
+          sed -i "s|{{SNOWFLAKE_WAREHOUSE}}|${SNOWFLAKE_WAREHOUSE}|g" profiles.yml
+          sed -i "s|{{SNOWFLAKE_DATABASE}}|${SNOWFLAKE_DATABASE_STAGING}|g" profiles.yml
+          sed -i "s|{{SNOWFLAKE_SCHEMA}}|${SNOWFLAKE_SCHEMA}|g" profiles.yml
+          sed -i "s|{{SNOWFLAKE_USER}}|${SNOWFLAKE_USER}|g" profiles.yml
+          cat profiles.yml
+
+      - name: Replace DBT_FF env_var with actual database in CI
+        run: |
+          SEARCH="{{ env_var('DBT_FF', 'DEV') }}"
+          REPL="${SNOWFLAKE_DATABASE_STAGING}"
+
+          ESCAPED_REPL=$(printf '%s\n' "$REPL" | sed 's/[\/&]/\\&/g')
+
+          sed -i "s|$SEARCH|$ESCAPED_REPL|g" models/Source.yml
+
+          cat models/Source.yml
+
+      - name: Run publish
+        run: |
+          echo "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > private_key.pem
+          snow dbt deploy ${{ vars.DBT_APP_NAME }} \
+            --temporary-connection \
+            --account=${{ vars.SNOWFLAKE_ACCOUNT }} \
+            --host=${{ vars.SNOWFLAKE_HOST }} \
+            --user=${{ vars.SNOWFLAKE_USER }} \
+            --role=${{ vars.SNOWFLAKE_ROLE }} \
+            --port=${{ vars.SNOWFLAKE_PORT }} \
+            --database=${{ vars.SNOWFLAKE_DATABASE_STAGING }} \
+            --schema=${{ vars.SNOWFLAKE_STAGING_SCHEMA }} \
+            --private-key-path=private_key.pem \
+            --authenticator=SNOWFLAKE_JWT
+
+
+
+============================================================
+FILE: dbt_profiles\cd_profiles.yml
+============================================================
+default:
+  target: {{DBT_TARGET}}
+  outputs:
+    {{DBT_TARGET}}:
+      type: snowflake
+      role: {{SNOWFLAKE_ROLE}}
+      warehouse: {{SNOWFLAKE_WAREHOUSE}}
+      database: {{SNOWFLAKE_DATABASE}}
+      schema: {{SNOWFLAKE_SCHEMA}}
+      account: ''
+      user: {{SNOWFLAKE_USER}}
+
+
+============================================================
+FILE: macros\generate_schema_name.sql
+============================================================
+{% macro generate_schema_name(custom_schema_name, node) -%}
+
+    {%- set default_schema = target.schema -%}
+    {%- if custom_schema_name is none -%}
+
+        {{ default_schema }}
+
+    {%- else -%}
+
+        {{ custom_schema_name | trim }}
+
+    {%- endif -%}
+
+{%- endmacro %}
+
+
+============================================================
+FILE: models\AS_GoldTours\AS_darbuotojai.sql
+============================================================
+
+{{ config(alias='AS_darbuotojai') }}
+
+/*select "Tour No_",
+	 --"Vairuotojo_tab_nr" 	as "Darbuotojo ID",
+     "Vairuotojo_vardas" 	as "Darbuotojas",
+     'Vairuotojas' 		as "Pareigybė",
+     'Vairuotojas' 		as "Pareigybė2",
+     "Trukmė"*24 			as "Dirbtas darbo laikas"
+from {{ref ('AS_GoldTours_data') }}  
+Where "Vairuotojo_vardas" is not null ---"_vairuotojas"=1
+
+union all
+
+select "Tour No_",
+	 --"Kroviko_tab_nr" 	as "Darbuotojo ID",
+     "Kroviko_vardas" 	as "Darbuotojas",
+     'Krovikas1' 		as "Pareigybė",
+     'Krovikas' 		as "Pareigybė2",
+     "Trukmė"*24 			as "Dirbtas darbo laikas"
+from {{ref ('AS_GoldTours_data') }} 
+Where "Kroviko_vardas" is not null --"_krovikas"=1
+
+union all 
+
+select "Tour No_",
+	 --"Kroviko2_tab_nr" 	as "Darbuotojo ID",
+     "Kroviko2_vardas" 	as "Darbuotojas",
+     'Krovikas2' 		as "Pareigybė",
+     'Krovikas' 		as "Pareigybė2",
+     "Trukmė"*24 			as "Dirbtas darbo laikas"
+from {{ref ('AS_GoldTours_data') }} 
+Where "Kroviko2_vardas" is not null --"_krovikas2"=1*/
+
+select 
+    CAST(GT_data."Tour No_" AS VARCHAR)                         as "Tour No_"
+    ,null                                                       as "Darbuotojo ID"
+    ,Staff."FName" ||' '|| Staff."LName"                        as "Darbuotojas"
+    ,CASE Staff."WorkFunction" 
+        WHEN '18' then 'Vairuotojas'
+        WHEN '19' then 'Pagalbinis darbininkas'
+        WHEN '21' then 'Vairuotojas-pagalbinis darbininkas'
+    end                                                         as "Pareigybė"
+    ,CASE Staff."WorkFunction" 
+        WHEN '18' then 'Vairuotojas'
+        WHEN '19' then 'Pagalbinis darbininkas'
+        WHEN '21' then 'Vairuotojas-pagalbinis darbininkas'
+    end                                                         as "Pareigybė2"
+    ,GT_data."Trukmė" 			                                as "Dirbtas darbo laikas"
+from {{ref ('AS_GoldTours_data') }}         as GT_data
+LEFT JOIN  {{ source("ASMIL", "STAFF") }}   as Staff    ON EQUAL_NULL(cast(Staff."StaffId" as varchar),GT_data."StaffId")
+where Staff."StaffId" is not null
+
+
+============================================================
+FILE: models\AS_GoldTours\AS_GoldTours_data.sql
+============================================================
+
+{{ config(alias='AS_data') }}
+
+  SELECT 
+    CAST(RouteHistory."RouteHistoryId" as VARCHAR)                  as "Tour No_",
+    CASE  RouteHistory."RouteState"
+        WHEN 49     THEN 'Užbaigtas'
+        WHEN 50     THEN 'Pradėtas'
+        WHEN 57     THEN 'Naujas'
+        WHEN 86     THEN 'Nepatvirtintas naujas maršrutas'
+        WHEN 1091   THEN 'Uždarytas automatiškai' end               as "Status",
+    RouteHistory."Title"                                            as "Description",
+    PeriodicRoutePar."Name"                                         as "Description 2",
+    null                                                            as "Document Type",
+    null                                                            as "DocumentType",
+    CAST(RouteHistory."RouteId"  as VARCHAR)                        as "Tour Plan No_",
+    User."FirstName" ||' '|| User."LastName"                        as "Dispečerė",
+    RouteHistory."NewDate"                                          as "Task Date",
+    case when RouteHistory."NewDate"> '2000-01-01' AND RouteHistory."NewDate"<dateadd(day,-3, Getdate()) then 'Vėluojantys' else 'Nevėluojantys/būsimi' end     
+                                                                    as "Vėluojanti registracija",
+    -- case when RouteHistory."NewDate"> '2000-01-01' AND RouteHistory"NewDate"<dateadd(day,-3, Getdate()) then 1 else 0 end      
+    CAST(null   as NUMBER)                                          as "veluojantys",
+    CAST(Territory."TerritoryName" as VARCHAR)                      as "Site Code",
+    SPLIT_PART(Department."Name", ' ', 3)						    as "LRS regionas",
+    null 						                                    as "LVRS", /*--naikinama*/
+    SPLIT_PART(Department."Name", ' ', 4)	                        as "LVRP",
+    Case when RouteHistory."RouteState" = '49' OR RouteHistory."RouteState" = '1091' then RouteHistory."EndDate"
+       end                                                          as "Completion Date",
+    Classifier."Value"                                              as "Transport Group Code",
+    Vehicle."RegNo"                                                 as "Vehicle No_",
+    CAST(Vehicle."Norm_Travel100"  as VARCHAR)	                    as "Emisijos klasė",
+    --case when len(trim(RouteHistory."VehicleId" ))>0 then 1 else 0 end   
+    CAST(null   as NUMBER)                                          as "_automobiliai",
+    null                                                            as "Driver No_", /*-- naikinama*/ 
+    CASE when RouteHistStaff_18."StaffId" is not null then "Vairuotojas"
+         when RouteHistStaff_18."StaffId" is null and RouteHistStaff_21."StaffId" is not null then "vairuotojas-krovikas" 
+     end                                                            as "Vairuotojo_vardas",
+    CASE when RouteHistStaff_18."StaffId" is not null then RouteHistStaff_18."TimeCardNumber"
+    when RouteHistStaff_18."StaffId" is null and RouteHistStaff_21."StaffId" is not null then RouteHistStaff_21."TimeCardNumber"
+    end                                                             as "Vairuotojo_tab_nr", 
+    CASE when RouteHistStaff_18."StaffId" is not null then 1
+         when RouteHistStaff_18."StaffId" is null and RouteHistStaff_21."StaffId" is not null then 1
+    else 0 END     as "_vairuotojas", 
+    null                                                            as "Co-Driver No_", /*--naikinama*/ 
+    CASE when RouteHistStaff_19."StaffId" is not null then "krovikas" 
+    end                                                             as "Kroviko_vardas",
+    RouteHistStaff_19."TimeCardNumber"                              as "Kroviko_tab_nr",    
+    case when RouteHistStaff_19."StaffId" is not null then 1
+    else 0 end                                                      as "_krovikas",
+    null                                                            as "Co-Driver 2 No_", /*--naikinama*/ 
+    CASE when RouteHistStaff_18."StaffId" is not null and RouteHistStaff_21."StaffId" is not null then "vairuotojas-krovikas" 
+     end                                                            as "Kroviko2_vardas",
+    CASE when RouteHistStaff_18."StaffId" is not null and RouteHistStaff_21."StaffId" is not null then RouteHistStaff_21."TimeCardNumber"
+     end as "Kroviko2_tab_nr",           
+    case when RouteHistStaff_18."StaffId" is not null and RouteHistStaff_21."StaffId" is not null then 1 
+    else 0 end                                                      as "_krovikas2",
+    RouteHistory."MileageEnd" - RouteHistory."MileageStart"         as "Distance", 
+    CAST(null   as NUMBER)                                          as "GPS kuras", /*?* nenurodyta  kur info */ 
+    TIME(RouteHistory."StartDate")   				                as "Pradžios laikas",
+    TIME(RouteHistory."EndDate") 				                    as "Pabaigos laikas",
+    DATEDIFF('second',RouteHistory."StartDate","EndDate")/3600      as "Trukmė",
+    RouteHistory."FuelStart"			                            as "Kuro likutis pradžioje",
+    RouteHistory."FuelEnd"		                                    as "Kuro likutis pabaigoje",
+    CAST(null   as NUMBER)                                          as "Motovalandų pradžioje", -- A.B: Moto valandos logistikai neaktualios (ASML bus tik km, motovalandos bus FO dalyje)
+    CAST(null   as NUMBER)                                          as "Motovalandų pabaigoje",-- A.B: Moto valandos logistikai neaktualios (ASML bus tik km, motovalandos bus FO dalyje)
+    RouteHistory."MileageStart"	                                    as "Spidometras pradžioje",
+    RouteHistory."MileageEnd"                                       as "Spidometras pabaigoje", 
+    RouteHistory."MileageGPS"					                    as "GPS rida", --SUM
+    SupplierOperations."FuelAmount"			                        as "Įsigytas kuro kiekis", --SUM
+    RouteHistory."FuelStart" - RouteHistory."FuelEnd"               as "Sunaudotas kuro kiekis", --SUM
+    CAST(null   as NUMBER)                                          as "Planinis kuro sunaudojimas", /*?* nenurodyta  kur info */ 
+    null                                                            as "Sutrumpinta kuro dimensija 1", /*? neaisku kaip sumachint*/ 
+    null                                                            as "Sutrumpinta kuro dimensija 2", /*? neaisku kaip sumachint*/
+    null                                                            as "LOG regionas", /*--naikinama*/ 
+ARRAY_TO_STRING(ARRAY_COMPACT(ARRAY_CONSTRUCT(RouteHistStaff_18."StaffId", RouteHistStaff_19."StaffId", RouteHistStaff_21."StaffId")), ', ') 
+                                                                    AS "StaffId",
+    CASE WHEN RouteHistory."RouteState" in (49, 1091) then DATE(RouteHistory."StartDate")
+    END                                                             AS "StartingDate"
+
+FROM {{ source("ASMIL", "ROUTE_HISTORY") }}                     as RouteHistory
+  LEFT JOIN {{ source("ASMIL", "ROUTE") }}                      as Route            ON EQUAL_NULL(Route."RouteId",RouteHistory."RouteHistoryId")
+  LEFT JOIN {{ source("ASMIL", "PERIODIC_ROUTE_PARAMETERS") }}  as PeriodicRoutePar ON EQUAL_NULL(PeriodicRoutePar."PeriodicRouteParametersId",Route."PeriodicRouteParameterId")
+  LEFT JOIN {{ source("ASMIL", "USER") }}                       as User             ON EQUAL_NULL(User."UserId",RouteHistory."UserId")
+  LEFT JOIN {{ source("ASMIL", "TERRITORY") }}                  as Territory        ON EQUAL_NULL(Territory."Id",RouteHistory."TerritoryId")
+  LEFT JOIN {{ source("ASMIL", "DEPARTMENT") }}                 as Department       ON EQUAL_NULL(Department."DepartmentPath",RouteHistory."DepartmentPath")
+  LEFT JOIN {{ source("ASMIL", "VEHICLE") }}                    as Vehicle          ON EQUAL_NULL(Vehicle."VehicleId",RouteHistory."VehicleId")
+  LEFT JOIN {{ source("ASMIL", "CLASSIFIER") }}                 as Classifier       ON EQUAL_NULL(Classifier."ClassifierId",Vehicle."VehicleType")
+  LEFT JOIN (SELECT "RouteHistoryId", sum("FuelAmount") as "FuelAmount"
+            FROM {{ source("ASMIL", "SUPPLIER_OPERATIONS") }} 
+            group by "RouteHistoryId")                          as SupplierOperations     ON EQUAL_NULL(SupplierOperations."RouteHistoryId",RouteHistory."RouteHistoryId")
+
+  LEFT JOIN ( SELECT RouteHistStaff."RouteHistoryId",    
+                    LISTAGG(Staff_18."FName" || ' ' || Staff_18."LName", ', ') WITHIN GROUP (ORDER BY Staff_18."TimeCardNumber") AS "Vairuotojas",
+                    LISTAGG(Staff_18."TimeCardNumber", ', ') WITHIN GROUP (ORDER BY Staff_18."TimeCardNumber")                   AS "TimeCardNumber",
+                    LISTAGG(Staff_18."StaffId", ', ') WITHIN GROUP (ORDER BY Staff_18."TimeCardNumber")                   AS "StaffId"
+            FROM {{ source("ASMIL", "ROUTE_HISTORY_STAFF") }} AS RouteHistStaff   
+            LEFT JOIN DEV.ASMIL."STAFF" AS Staff_18     ON EQUAL_NULL(Staff_18."StaffId", RouteHistStaff."StaffId")
+            WHERE Staff_18."WorkFunction" = '18'
+            GROUP BY RouteHistStaff."RouteHistoryId") as RouteHistStaff_18   ON EQUAL_NULL(RouteHistStaff_18."RouteHistoryId",RouteHistory."RouteHistoryId") 
+    LEFT JOIN (SELECT RouteHistStaff."RouteHistoryId",    
+                    LISTAGG(Staff_19."FName" || ' ' || Staff_19."LName", ', ') WITHIN GROUP (ORDER BY Staff_19."TimeCardNumber") AS "krovikas",
+                    LISTAGG(Staff_19."TimeCardNumber", ', ') WITHIN GROUP (ORDER BY Staff_19."TimeCardNumber")                   AS "TimeCardNumber",
+                    LISTAGG(Staff_19."StaffId", ', ') WITHIN GROUP (ORDER BY Staff_19."TimeCardNumber")                   AS "StaffId"
+            FROM {{ source("ASMIL", "ROUTE_HISTORY_STAFF") }} AS RouteHistStaff   
+            LEFT JOIN DEV.ASMIL."STAFF" AS Staff_19     ON EQUAL_NULL(Staff_19."StaffId", RouteHistStaff."StaffId")
+            WHERE Staff_19."WorkFunction" = '19'
+            GROUP BY RouteHistStaff."RouteHistoryId") as RouteHistStaff_19   ON EQUAL_NULL(RouteHistStaff_19."RouteHistoryId",RouteHistory."RouteHistoryId") 
+    LEFT JOIN (SELECT RouteHistStaff."RouteHistoryId",    
+                    LISTAGG(Staff_21."FName" || ' ' || Staff_21."LName", ', ') WITHIN GROUP (ORDER BY Staff_21."TimeCardNumber") AS "vairuotojas-krovikas",
+                    LISTAGG(Staff_21."TimeCardNumber", ', ') WITHIN GROUP (ORDER BY Staff_21."TimeCardNumber")                   AS "TimeCardNumber",
+                    LISTAGG(Staff_21."StaffId", ', ') WITHIN GROUP (ORDER BY Staff_21."TimeCardNumber")                   AS "StaffId"
+            FROM {{ source("ASMIL", "ROUTE_HISTORY_STAFF") }} AS RouteHistStaff   
+            LEFT JOIN DEV.ASMIL."STAFF" AS Staff_21     ON EQUAL_NULL(Staff_21."StaffId", RouteHistStaff."StaffId")
+            WHERE Staff_21."WorkFunction" = '21'
+            GROUP BY RouteHistStaff."RouteHistoryId") as RouteHistStaff_21   ON EQUAL_NULL(RouteHistStaff_21."RouteHistoryId",RouteHistory."RouteHistoryId")  
+
+WHERE RouteHistory."NewDate" >= '2025-06-01'            
+
+
+============================================================
+FILE: models\AS_GoldTours\AS_GoldTours_kalendorius.sql
+============================================================
+{{ config(alias='AS_Kalendorius') }}
+
+
+WITH tmp AS (
+    SELECT DISTINCT "Task Date" AS Date
+    FROM {{ ref('AS_GoldTours_data') }}
+)
+
+SELECT
+    Date                                                                                  AS "Task Date",
+    Date                                                                                  AS "Data",
+    EXTRACT(YEAR FROM Date)                                                               AS "Metai",
+    CONCAT('H', CEIL(EXTRACT(MONTH FROM Date) / 6))                                       AS "Pusmetis",
+    CONCAT('Q', CEIL(EXTRACT(MONTH FROM Date) / 3))                                       AS "Ketvirtis",
+    MONTH (Date)                                                                          AS "Mėnuo",
+    week(Date)                                                                            as "Savaitė",
+    CASE dayofweek(Date)
+        WHEN 1 THEN 'Pr'  -- Pirmadienis
+        WHEN 2 THEN 'An'  -- Antradienis
+        WHEN 3 THEN 'Tr'  -- Trečiadienis
+        WHEN 4 THEN 'Kt'  -- Ketvirtadienis
+        WHEN 5 THEN 'Pn'  -- Penktadienis
+        WHEN 6 THEN 'Št'  -- Šeštadienis
+        WHEN 0 THEN 'Sk'  -- Sekmadienis (Snowflake pradeda savaitę nuo sekmadienio)
+    END                                                                                   AS "Savaitės diena",
+    CONCAT(EXTRACT(YEAR FROM Date), '-', LPAD(EXTRACT(MONTH FROM Date)::TEXT, 2, '0'))    AS "Metai, mėnuo",
+    CONCAT(EXTRACT(YEAR FROM Date), '-W',  week(Date))                                    as "Metai, savaitė",
+    CONCAT(EXTRACT(YEAR FROM Date), '-Q', CEIL(EXTRACT(MONTH FROM Date) / 3))             AS "Metai, ketvirtis"
+FROM tmp
+where Date  is not null
+
+
+============================================================
+FILE: models\AS_GoldTours\AS_kiekiai.sql
+============================================================
+
+{{ config(alias='AS_kiekai') }}
+
+
+ select
+    CAST(RouteHistory."RouteHistoryId" as VARCHAR)	                    as "Tour No_",
+    CAST(WasteList."NoInAccounting" as VARCHAR)                         AS "No_", 
+    Department."Name"                                                   AS "Location Code",
+    null                                                                AS "Document No_", /*reikia patikslinimo*/ 
+    null                                                                as "_Document No_", /*reikia patikslinimo*/ 
+    WasteOrigin."Code"		                                            as "Waste Material Code",
+    CAST(null AS NUMBER)			                                    as "Order Line Qty", /*nėr info*/ 
+    SUM(IFNULL(PickupHistory."ObjectCount", 0))+SUM(IFNULL(PickupObjects."ObjectCount", 0))   
+                                                                        as "Planinis konteinerių kiekis",
+    SUM(IFNULL(PickupHistory."ObjectCount", 0))                         as "Konteinerių kiekis",
+    SUM(IFNULL(PickupHistory2."ObjectCount", 0))                        as "Served",
+    sum(RouteMotorings."TakedCount")           			                as "Quantity",
+    CAST(null AS NUMBER)			                                    AS "Gross Weight", -- A.B: Mobiliosios dalies svoris - iš  automobilio atėjusių svorių suma. Lygindavome su faktu. Pasitikslinsiu kokie konkretesni duomenų šaltiniai
+    CAST(null AS NUMBER)			                                    as "Net Weight", -- A.B: Mobiliosios dalies svoris - iš  automobilio atėjusių svorių suma. Lygindavome su faktu. Pasitikslinsiu kokie konkretesni duomenų šaltiniai
+    SUM(EmtyedVolume."Volume")                                          as "TotalWeight"
+
+ 
+FROM {{ source("ASMIL", "ROUTE_HISTORY") }}                   as RouteHistory
+LEFT JOIN {{ source("ASMIL", "DEPARTMENT") }}                 as Department     ON EQUAL_NULL(Department."DepartmentPath",RouteHistory."DepartmentPath")
+LEFT JOIN {{ source("ASMIL", "ROUTE") }}                      as Route          ON EQUAL_NULL(Route."RouteId",RouteHistory."RouteHistoryId")
+LEFT JOIN {{ source("ASMIL", "WASTE_ORIGIN") }}               as WasteOrigin    ON EQUAL_NULL(WasteOrigin."WasteOriginId",RouteHistory."WasteOriginId")
+LEFT JOIN (select sum("TakedCount") as "TakedCount" , sum("PickupObjectCount") as "PickupObjectCount", "RouteHistoryId"
+            FROM {{ source("ASMIL", "ROUTE_MONITORINGS") }}   
+            group by  "RouteHistoryId")                       as RouteMotorings ON EQUAL_NULL(RouteMotorings."RouteHistoryId",RouteHistory."RouteHistoryId")
+
+LEFT JOIN ( SELECT "RouteHistoryId"
+                    ,Count(*) AS "ObjectCount"
+                   -- ,Sum(Cast("IsInRoute" AS INT)) AS "IsInRouteSum",
+                  --  ,Min("DateTime") AS "FirstServe",
+                  --  ,Max("DateTime") AS "LastServe",
+                  --  ,Sum(IFNULL("CalculatedWaste", 0)) AS "WeighingSum"
+             FROM {{ source("ASMIL", "PICKUP_HISTORY") }}
+             GROUP BY "RouteHistoryId" )                    AS PickupHistory    ON EQUAL_NULL(RouteHistory."RouteHistoryId", PickupHistory."RouteHistoryId" )  
+LEFT JOIN ( SELECT "RouteHistoryId",
+                    Count(*) AS "ObjectCount"
+             FROM {{ source("ASMIL", "PICKUP_OBJECTS") }}
+             GROUP BY "RouteHistoryId" )                    AS PickupObjects    ON EQUAL_NULL(RouteHistory."RouteHistoryId", PickupObjects."RouteHistoryId" )   
+
+LEFT JOIN ( SELECT "RouteHistoryId",
+                    Count(*) AS "ObjectCount"
+             FROM {{ source("ASMIL", "PICKUP_HISTORY") }}
+             WHERE "TakeStateId" = (SELECT "ClassifierId" FROM {{ source("ASMIL", "CLASSIFIER") }} WHERE "ClassifierCode" = 'TS_TAKED')
+             GROUP BY "RouteHistoryId" )                    AS PickupHistory2    ON EQUAL_NULL(RouteHistory."RouteHistoryId", PickupHistory2."RouteHistoryId" ) 
+
+LEFT JOIN (select "RouteHistoryId", sum("Volume") as "Volume"  
+            FROM {{ source("ASMIL", "EMPTYED_VOLUME") }}  
+            group by "RouteHistoryId")          as EmtyedVolume     ON EQUAL_NULL(EmtyedVolume."RouteHistoryId",RouteHistory."RouteHistoryId") 
+LEFT JOIN {{ source("ASMIL", "WASTE_LIST") }}   as WasteList        ON EQUAL_NULL(WasteList."WasteListCodeId",RouteHistory."WasteListId") 
+
+  where RouteHistory."NewDate" >= '2025-06-01'    
+  and RouteHistory."RouteHistoryId" in (select distinct "Tour No_" from {{ref ('AS_GoldTours_data') }}  )
+
+  group by WasteOrigin."Code", Department."Name" , RouteHistory."RouteHistoryId",WasteList."NoInAccounting"
+
+
+
+============================================================
+FILE: models\GoldTours\darbuotojai.sql
+============================================================
+
+
+select *, 'ENWIS' as "system" from {{ ref('ENW_darbuotojai') }}
+
+UNION ALL
+
+select *, 'ASML' as "system" from {{ ref('AS_darbuotojai') }}
+
+
+============================================================
+FILE: models\GoldTours\GoldTours_data.sql
+============================================================
+ {{ config(alias='data') }}
+
+ 
+select *, 'ENWIS' as "system" from {{ ref('ENW_GoldTours_data') }}
+
+UNION ALL
+
+select *, 'ASML' as "system" from {{ ref('AS_GoldTours_data') }}
+
+
+============================================================
+FILE: models\GoldTours\GoldTours_kalendorius.sql
+============================================================
+ {{ config(alias='kalendorius') }}
+
+ 
+select *, 'ENWIS' as "system" from {{ ref('ENW_GoldTours_kalendorius') }}
+
+UNION ALL
+
+select *, 'ASML' as "system" from {{ ref('AS_GoldTours_kalendorius') }}
+
+
+============================================================
+FILE: models\GoldTours\kiekiai.sql
+============================================================
+
+select *, 'ENWIS' as "system" from {{ ref('ENW_kiekiai') }}
+
+UNION ALL
+
+select *, 'ASML' as "system" from {{ ref('AS_kiekiai') }}
+
+
+============================================================
+FILE: models\Gold_ENW_Tours\ENW_darbuotojai.sql
+============================================================
+/*
+darbuotojai:
+Load [Tour No_],
+	 Vairuotojo_tab_nr 	as [Darbuotojo ID],
+     Vairuotojo_vardas 	as Darbuotojas,
+     'Vairuotojas' 		as Pareigybė,
+     'Vairuotojas' 		as Pareigybė2,
+     Trukmė*24 			as [Dirbtas darbo laikas]
+Resident data
+Where _vairuotojas=1
+;
+
+Concatenate (darbuotojai)
+Load [Tour No_],
+	 Kroviko_tab_nr 	as [Darbuotojo ID],
+     Kroviko_vardas 	as Darbuotojas,
+     'Krovikas1' 		as Pareigybė,
+     'Krovikas' 		as Pareigybė2,
+     Trukmė*24 			as [Dirbtas darbo laikas]
+Resident data
+Where _krovikas=1
+;
+
+Concatenate (darbuotojai)
+Load [Tour No_],
+	 Kroviko2_tab_nr 	as [Darbuotojo ID],
+     Kroviko2_vardas 	as Darbuotojas,
+     'Krovikas2' 		as Pareigybė,
+     'Krovikas' 		as Pareigybė2,
+     Trukmė*24 			as [Dirbtas darbo laikas]
+Resident data
+Where _krovikas2=1
+;
+*/
+
+select "Tour No_",
+	 "Vairuotojo_tab_nr" 	as "Darbuotojo ID",
+     "Vairuotojo_vardas" 	as "Darbuotojas",
+     'Vairuotojas' 		as "Pareigybė",
+     'Vairuotojas' 		as "Pareigybė2",
+     "Trukmė"*24 			as "Dirbtas darbo laikas"
+from {{ref ('ENW_GoldTours_data') }}  
+Where "_vairuotojas"=1
+
+union all
+
+select "Tour No_",
+	 "Kroviko_tab_nr" 	as "Darbuotojo ID",
+     "Kroviko_vardas" 	as "Darbuotojas",
+     'Krovikas1' 		as "Pareigybė",
+     'Krovikas' 		as "Pareigybė2",
+     "Trukmė"*24 			as "Dirbtas darbo laikas"
+from {{ref ('ENW_GoldTours_data') }} 
+Where "_krovikas"=1
+
+union all 
+
+select "Tour No_",
+	 "Kroviko2_tab_nr" 	as "Darbuotojo ID",
+     "Kroviko2_vardas" 	as "Darbuotojas",
+     'Krovikas2' 		as "Pareigybė",
+     'Krovikas' 		as "Pareigybė2",
+     "Trukmė"*24 			as "Dirbtas darbo laikas"
+from {{ref ('ENW_GoldTours_data') }} 
+Where "_krovikas2"=1
+
+
+
+
+============================================================
+FILE: models\Gold_ENW_Tours\ENW_GoldTours_data.sql
+============================================================
+/*
+ data:
+  LOAD No_							as [Tour No_],
+      ApplyMap('map_status', Status) as Status,
+      Description,
+      "Description 2",
+      ApplyMap('map_doctype', "Document Type") as "Document Type",
+       ApplyMap('map_doctype', "Document Type") as "DocumentType",
+      "Tour Plan No_",
+      "Post ID"						as Dispečerė,
+      if("Task Date"<0, '', date(floor("Task Date")))		as [Task Date],
+      if("Task Date">0 AND "Task Date"<date(Today()-3), 'Vėluojantys', 'Nevėluojantys/būsimi') as [Vėluojanti registracija],
+      if("Task Date">0 AND "Task Date"<date(Today()-3), 1, 0) as veluojantys,
+      "Site Code",
+      ApplyMap('map_lrs', [Site Code], 'neaprašyta')							as [LRS regionas],
+      ApplyMap('map_lvrs', [Site Code], 'neaprašyta')							as [LVRS],
+      ApplyMap('map_lvrp', "Fuel Shortcut Dimension 1 Code", 'neaprašyta')	as [LVRP],
+      if("Completion Date"<0, '', date(ConvertToLocalTime("Completion Date",'Vilnius'), 'YYYY-MM-DD hh:mm')) as [Completion Date],
+      "Transport Group Code",
+      "Vehicle No_",
+      ApplyMap('map_emisijos_klase', [Vehicle No_], '')	as [Emisijos klasė],
+      if(len(trim("Vehicle No_"))>0, 1,0)					as _automobiliai,
+      "Driver No_",
+      ApplyMap('map_vardas',"Driver No_",'' ) 		as Vairuotojo_vardas,
+      ApplyMap('map_tabelis',"Driver No_",'' ) 		as Vairuotojo_tab_nr,
+      if(len(trim("Driver No_"))>0, 1,0)  			as _vairuotojas,
+      "Co-Driver No_",
+      ApplyMap('map_vardas',"Co-Driver No_",'' ) 		as Kroviko_vardas,
+      ApplyMap('map_tabelis',"Co-Driver No_",'' )		as Kroviko_tab_nr,
+      if(len(trim("Co-Driver No_"))>0, 1,0)  			as _krovikas,
+      "Co-Driver 2 No_",
+      ApplyMap('map_vardas',"Co-Driver 2 No_",'' ) 	as Kroviko2_vardas,
+      ApplyMap('map_tabelis',"Co-Driver 2 No_",'' ) 	as Kroviko2_tab_nr,   
+      if(len(trim("Co-Driver 2 No_"))>0, 1,0)  		as _krovikas2,
+       Distance,
+      "GPS Fuel"						as [GPS kuras], 
+      time("Starting Time"-date(floor([Starting Time])), 'hh:mm')					as [Pradžios laikas],
+      time("Finishing Time"-date(floor([Finishing Time])), 'hh:mm')				as [Pabaigos laikas],
+      "Finishing Time"-"Starting Time" as Trukmė,
+      "Starting Fuel Balance"			as [Kuro likutis pradžioje],
+      "Finishing Fuel Balance"		as [Kuro likutis pabaigoje],
+      "Starting Moto Hours"			as [Motovalandų pradžioje],
+      "Finishing Moto Hours"			as [Motovalandų pabaigoje],
+      "Starting Speedometer Mileage"	as [Spidometras pradžioje],
+      "Finishing Speedometer Mileage"	as [Spidometras pabaigoje], 
+      "GPS Distance"					as [GPS rida], 
+      "Qty_ Fuel Acquisition"			as [Įsigytas kuro kiekis],
+      "Qty_ Fuel Consumption"			as [Sunaudotas kuro kiekis],
+      "Target Fuel Consumption"		as [Planinis kuro sunaudojimas],
+      "Fuel Shortcut Dimension 1 Code" as [Sutrumpinta kuro dimensija 1],
+      "Fuel Shortcut Dimension 2 Code" as [Sutrumpinta kuro dimensija 2],
+      ApplyMap('map_log_region', "Fuel Shortcut Dimension 1 Code", 
+          ApplyMap('map_log_region2', "Fuel Shortcut Dimension 1 Code" & '|' & "Fuel Shortcut Dimension 2 Code", '')) as "LOG regionas"
+  FROM [lib://Qlik DATA (in_migle.purzelyte)/ENWIS/Tour.qvd]
+  (qvd)
+  ;
+*/
+
+{{ config(alias='ENW_data') }}
+
+Select Tour."No_"							                                as "Tour No_",
+      MAP_STATUS."b"                                                        as "Status",
+      Tour."Description",
+      Tour."Description 2",
+      MAP_DOCTYPE."b"                                                       as "Document Type",
+      MAP_DOCTYPE."b"                                                       as "DocumentType",
+      Tour."Tour Plan No_",
+      Tour."Post ID"						                                as "Dispečerė",
+      case when "Task Date"< '2000-01-01' then null else date("Task Date") end		as "Task Date",
+      case when "Task Date"> '2000-01-01' AND "Task Date"<dateadd(day,-3, Getdate()) then 'Vėluojantys' else 'Nevėluojantys/būsimi' end     as "Vėluojanti registracija",
+      case when "Task Date"> '2000-01-01' AND "Task Date"<dateadd(day,-3, Getdate()) then 1 else 0 end      as "veluojantys",
+      Tour."Site Code",
+      ifnull(MAP_LRS."LRS_Regionas", 'neaprašyta')							as "LRS regionas",
+      ifnull(MAP_LVRS.LVRS, 'neaprašyta')							        as "LVRS",
+      ifnull(MAP_LVRP.LVRP, 'neaprašyta')	                                as "LVRP",
+      case when "Completion Date"< '2000-01-01' then null else "Completion Date" end 
+                                                                            as "Completion Date",
+      Tour."Transport Group Code",
+      Tour."Vehicle No_",
+      ifnull(MAP_EMISIJOS_KLASE."Emisijos klasė", '')	                    as "Emisijos klasė",
+      case when len(trim("Vehicle No_"))>0 then 1 else 0 end				as "_automobiliai",
+      Tour."Driver No_",
+      ifnull(MAP_VARDAS."Name",'' ) 		                                as "Vairuotojo_vardas",
+      ifnull(MAP_TABELIS."Employee No_",'' ) 		                        as "Vairuotojo_tab_nr",
+      case when len(trim("Driver No_"))>0 then 1 else 0 end  			    as "_vairuotojas",
+      Tour."Co-Driver No_",
+      ifnull(MAP_VARDAS2."Name",'' ) 		                                as "Kroviko_vardas",
+      ifnull(MAP_TABELIS2."Employee No_",'' )		                        as "Kroviko_tab_nr",
+      case when len(trim("Co-Driver No_"))>0 then 1 else 0 end  			as "_krovikas",
+      Tour."Co-Driver 2 No_",
+      ifnull(MAP_VARDAS3."Name",'' ) 	                                    as "Kroviko2_vardas",
+      ifnull(MAP_TABELIS3."Employee No_",'' ) 	                            as "Kroviko2_tab_nr",     
+      case when len(trim("Co-Driver 2 No_"))>0 then 1 else 0 end  		    as "_krovikas2",
+      Tour."Distance",
+      Tour."GPS Fuel"						                                as "GPS kuras", 
+      TIME(Tour."Starting Time")   				                            as "Pradžios laikas",
+      TIME(Tour."Finishing Time") 				                            as "Pabaigos laikas",
+      DATEDIFF('seconds',Tour."Starting Time","Finishing Time")/ 3600       as "Trukmė",
+      Tour."Starting Fuel Balance"			                                as "Kuro likutis pradžioje",
+      Tour."Finishing Fuel Balance"		                                    as "Kuro likutis pabaigoje",
+      Tour."Starting Moto Hours"			                                as "Motovalandų pradžioje",
+      Tour."Finishing Moto Hours"			                                as "Motovalandų pabaigoje",
+      Tour."Starting Speedometer Mileage"	                                as "Spidometras pradžioje",
+      Tour."Finishing Speedometer Mileage"	                                as "Spidometras pabaigoje", 
+      Tour."GPS Distance"					                                as "GPS rida", 
+      Tour."Qty_ Fuel Acquisition"			                                as "Įsigytas kuro kiekis",
+      Tour."Qty_ Fuel Consumption"			                                as "Sunaudotas kuro kiekis",
+      Tour."Target Fuel Consumption"		                                as "Planinis kuro sunaudojimas",
+      Tour."Fuel Shortcut Dimension 1 Code"                                 as "Sutrumpinta kuro dimensija 1",
+      Tour."Fuel Shortcut Dimension 2 Code"                                 as "Sutrumpinta kuro dimensija 2",
+      ifnull(MAP_LOG_REGION."LOG Regionas", ifnull (MAP_LOG_REGION2."LOG Regionas", '')) as "LOG regionas",
+      NULL                                                   as "StaffId",
+      NULL                                                   AS "StartingDate"
+  FROM {{ source("ENWIS", "Tour") }}             as Tour
+  left join {{ref ('SilverTours_map_status') }}  as MAP_STATUS on EQUAL_NULL(MAP_STATUS."a",Tour."Status")
+  left join {{ref ('map_doctype') }}             as MAP_DOCTYPE on EQUAL_NULL(MAP_DOCTYPE."a",Tour."Document Type")
+  left join {{ref ('map_lrs') }}                 as MAP_LRS on EQUAL_NULL(MAP_LRS."Site code",Tour."Site Code")
+  left join {{ref ('map_lvrs') }}                as MAP_LVRS on EQUAL_NULL(MAP_LVRS."Site Code",Tour."Site Code")
+  left join {{ref ('map_lvrp') }}                as MAP_LVRP on EQUAL_NULL(MAP_LVRP."Padalinio kodas",Tour."Fuel Shortcut Dimension 1 Code")
+  left join {{ref ('map_emisijos_klase') }}      as MAP_EMISIJOS_KLASE on EQUAL_NULL(MAP_EMISIJOS_KLASE."Automobilio nr",Tour."Vehicle No_")
+  left join {{ref ('map_vardas') }}              as MAP_VARDAS on EQUAL_NULL(MAP_VARDAS."No_",Tour."Driver No_")
+  left join {{ref ('map_vardas') }}              as MAP_VARDAS2 on EQUAL_NULL(MAP_VARDAS2."No_",Tour."Co-Driver No_")
+  left join {{ref ('map_vardas') }}              as MAP_VARDAS3 on EQUAL_NULL(MAP_VARDAS3."No_",Tour."Co-Driver 2 No_")
+  left join {{ref ('map_tabelis') }}             as MAP_TABELIS on EQUAL_NULL(MAP_TABELIS."No_",Tour."Driver No_")
+  left join {{ref ('map_tabelis') }}             as MAP_TABELIS2 on EQUAL_NULL(MAP_TABELIS2."No_",Tour."Co-Driver No_")
+  left join {{ref ('map_tabelis') }}             as MAP_TABELIS3 on EQUAL_NULL(MAP_TABELIS3."No_",Tour."Co-Driver 2 No_")
+  left join {{ref ('map_log_region') }}          as MAP_LOG_REGION on EQUAL_NULL(MAP_LOG_REGION."PADALINIO KODAS",Tour."Fuel Shortcut Dimension 1 Code")
+  left join {{ref ('map_log_region2') }}         as MAP_LOG_REGION2 on EQUAL_NULL(MAP_LOG_REGION2."Padalinio kodas | Projekto kodas",concat(Tour."Fuel Shortcut Dimension 1 Code",' | ',"Fuel Shortcut Dimension 2 Code"))
+
+  where "Task Date" > '2019-12-31' and "Task Date" <= '2025-05-31'
+
+
+    
+
+
+============================================================
+FILE: models\Gold_ENW_Tours\ENW_GoldTours_kalendorius.sql
+============================================================
+/*
+///$tab Kalendorius
+tmp:
+LOAD Distinct [Task Date] as Date
+Resident data;
+
+
+[Kalendorius]:
+LOAD
+	Date 													AS [Task Date],
+    Date													as Data,
+	YEAR(Date) 												AS Metai,
+	DUAL('H' & CEIL(MONTH(Date)/6),   CEIL(MONTH(Date)/6)) 	AS [Pusmetis],
+	DUAL('Q'& CEIL(MONTH(Date)/3), CEIL(MONTH(Date)/3)) 	AS [Ketvirtis],
+	NUM(MONTH(Date), '00') 									AS [Mėnuo],
+	Week(Date,0,0) 											AS [Savaitė],
+    WeekDay(Date)											as [Savaitės diena],
+	DUAL(YEAR(Date) & '-' & NUM(MONTH(Date), '00'), YEAR(Date) * 100 + Month(Date)) 				AS [Metai, mėnuo],
+	DUAL(WEEKYEAR(Date) & '-W' & NUM(Week(Date), '00'), WEEKYEAR(Date) * 100 + Week(Date)) 			AS [Metai, savaitė],
+	DUAL(YEAR(Date) & '-Q' & NUM(CEIL(MONTH(Date)/3), '0'), YEAR(Date) * 10 + CEIL(MONTH(Date)/3)) 	AS [Metai, ketvirtis]
+RESIDENT tmp;
+
+*/
+
+{{ config(alias='ENW_Kalendorius') }}
+
+
+WITH tmp AS (
+    SELECT DISTINCT "Task Date" AS Date
+    FROM {{ ref('ENW_GoldTours_data') }}
+)
+
+SELECT
+    Date                                                                                  AS "Task Date",
+    Date                                                                                  AS "Data",
+    EXTRACT(YEAR FROM Date)                                                               AS "Metai",
+    CONCAT('H', CEIL(EXTRACT(MONTH FROM Date) / 6))                                       AS "Pusmetis",
+    CONCAT('Q', CEIL(EXTRACT(MONTH FROM Date) / 3))                                       AS "Ketvirtis",
+    MONTH (Date)                                                                          AS "Mėnuo",
+    week(Date)                                                                            as "Savaitė",
+    CASE dayofweek(Date)
+        WHEN 1 THEN 'Pr'  -- Pirmadienis
+        WHEN 2 THEN 'An'  -- Antradienis
+        WHEN 3 THEN 'Tr'  -- Trečiadienis
+        WHEN 4 THEN 'Kt'  -- Ketvirtadienis
+        WHEN 5 THEN 'Pn'  -- Penktadienis
+        WHEN 6 THEN 'Št'  -- Šeštadienis
+        WHEN 0 THEN 'Sk'  -- Sekmadienis (Snowflake pradeda savaitę nuo sekmadienio)
+    END                                                                                   AS "Savaitės diena",
+    CONCAT(EXTRACT(YEAR FROM Date), '-', LPAD(EXTRACT(MONTH FROM Date)::TEXT, 2, '0'))    AS "Metai, mėnuo",
+    CONCAT(EXTRACT(YEAR FROM Date), '-W',  week(Date))                                    as "Metai, savaitė",
+    CONCAT(EXTRACT(YEAR FROM Date), '-Q', CEIL(EXTRACT(MONTH FROM Date) / 3))             AS "Metai, ketvirtis"
+FROM tmp
+where Date  is not null
+
+
+============================================================
+FILE: models\Gold_ENW_Tours\ENW_kiekiai.sql
+============================================================
+/*
+kiekiai:
+  LOAD "Tour No_" 					as [Tour No_],
+       No_, 
+       [Location Code],
+       "Document No_",
+       "Document No_"				as  "_Document No_",
+       [Int_ Material Catalog]		as [Waste Material Code],
+       Count(timestamp) 				as [Order Line Qty],
+       sum([Planned Qty_ to Handle]) 	as [Planinis konteinerių kiekis],
+       sum([Qty_ to Handle]) 			as [Konteinerių kiekis],
+       sum(Quantity)					as Quantity,
+       sum("Gross Weight")			as "Gross Weight",
+       sum("Net Weight")				as "Net Weight",
+       sum(if("Qty_ to Dispose Mandatory"=0,  "Qty_ to Dispose", 0)) as TotalWeight
+  FROM [lib://Qlik DATA (in_migle.purzelyte)/ENWIS/Waste Management Line_202*.qvd]
+  (qvd)
+  Where Exists("Tour No_")
+  Group by "Tour No_", No_,  [Location Code], [Int_ Material Catalog], "Document No_"
+  ;
+
+*/
+
+select "Tour No_" 					            as "Tour No_",
+       "No_", 
+       "Location Code",
+       "Document No_",
+       "Document No_"				            as  "_Document No_",
+       "Int_ Material Catalog"		            as "Waste Material Code",
+       Count("timestamp") 				        as "Order Line Qty",
+       sum("Planned Qty_ to Handle") 	        as "Planinis konteinerių kiekis",
+       sum("Qty_ to Handle") 			        as "Konteinerių kiekis",
+       Case when "Document No_" like 'SO%' then sum("Quantity") 
+            end                                 as "Served",
+       sum("Quantity")					        as "Quantity",
+       sum("Gross Weight")			            as "Gross Weight",
+       sum("Net Weight")				        as "Net Weight",
+       sum(case when "Qty_ to Dispose Mandatory"=0 then "Qty_ to Dispose" else 0 end) 
+                                                as "TotalWeight"
+  FROM {{ source("ENWIS", "Waste Management Line") }}
+  where "Task Date" > '2019-12-31' and "Task Date" <= '2025-05-31'--last_day(getdate()) 
+  and "Tour No_" in (select distinct "Tour No_" from {{ref ('ENW_GoldTours_data') }}  )
+  
+  group by "Tour No_", "No_",  "Location Code", "Int_ Material Catalog", "Document No_"
+
+
+============================================================
+FILE: models\SilverTours\dim.sql
+============================================================
+select 1 as "dimid", 'Tour No.' as "dimname"
+union all
+select '2', 'DATOS: Task Date'
+ union all  
+ select '3', 'Site Code'
+ union all  
+ select '4', 'Vehicle No.'
+ union all  
+ select '5', 'Driver No.'
+ union all  
+ select '6', 'Co-Driver No.'
+ union all  
+ select '7', 'Co-Driver 2 No.'
+ union all  
+ select '8', 'Tour Plan No.'
+ union all  
+ select '9', 'Tour description'
+ union all
+ select '10', 'Transport group code'
+ union all
+ select '11', 'Dispečerė'
+ union all
+ select '12', 'Pabaigos data'
+ union all
+ select '13', 'Statusas'
+ union all
+ select '14', 'Distance'
+ union all
+ select '15', 'GPS kuras'
+ union all
+ select '16', 'Pradžios laikas'
+ union all
+ select '17', 'Pabaigos laikas'
+ union all
+ select '18', 'Spidometras pradžioje'
+ union all
+ select '19', 'Spidometras pabaigoje'
+ union all
+ select '20', 'Motovalandų pradžioje'
+ union all
+ select '21', 'Motovalandų pabaigoje'
+ union all
+ select '22', 'Kuro likutis pradžioje'
+ union all
+ select '23', 'Įsigytas kuro kiekis'
+ union all
+ select '24', 'Sunaudotas kuro kiekis'
+ union all
+ select '25', 'Planinis kuro kiekis'
+ union all
+ select '26', 'Kuro likutis pabaigoje'
+ union all
+ select '27', 'GPS rida'
+ union all
+ select '28', 'Order line qty'
+ union all
+ select '29', 'Planinis konteinerių kiekis'
+ union all
+ select '30', 'Padalinio kodas'
+ union all
+ select '31', 'Projekto kodas'
+ union all
+ select '32', 'DATOS: Metai'
+ union all
+ select '33', '"DATOS: Metai, mėnuo"'
+ union all
+ select '34', 'DATOS: Mėnuo'
+ union all
+ select '35', 'Konteinerių kiekis'
+ union all
+ select '36', 'No.'
+ union all
+ select '37', 'Waste material code'
+ union all
+ select '38', 'Location'
+ union all
+ select '39', 'Quantity (viso - wml)'
+ union all
+ select '40', 'Dokumento tipas'
+ union all
+ select '41', 'Dokumento nr'
+ union all
+ select '42', 'Quantity (pagrindinė)'
+ union all
+ select '43', 'Quantity (įvykdyti užsakymai)'
+ union all
+ select '44', 'DATOS: Metai, ketvirtis'
+ union all
+ select '45', 'DATOS: Ketvirtis'
+ union all
+ select '46', 'DATOS: Metai, savaitė'
+ union all
+ select '47', 'DATOS: Savaitė'
+ union all
+ select '48', 'DATOS: Savaitės diena'
+ union all
+ select '49', 'LAIKAS: Automobilių laikas'
+ union all
+ select '50', 'LAIKAS: Vairuotojų laikas'
+ union all
+ select '51', 'LAIKAS: Krovikų laikas'
+ union all
+ select '52', 'LAIKAS: Darbininkų laikas'
+ union all
+ select '53', 'LOG regionas'
+ union all
+ select '54', 'LRS regionas'
+ union all
+ select '55', 'Bendras svoris'
+ union all
+ select '56', 'Mob dalies svoris'
+ union all
+ select '57', 'LVRS - Log.Vad.Regionas (site)'
+ union all
+ select '58', 'LVRP - Log.Vad.Regionas (padalinys)'
+ union all
+ select '59', 'Emisijos klasė'
+ union all
+ select '60', 'Tour description 2'
+
+
+============================================================
+FILE: models\SilverTours\dim2.sql
+============================================================
+
+ 
+  select '1' as "dimid2", 'Tour No.' as "dimname2"
+  union all
+  select '2', 'DATOS: Task Date'
+  union all
+  select '3', 'Site Code'
+  union all
+  select '4', 'Automobilis'
+  union all
+  select '5', 'Vairuotojas (enwis kodas)'
+  union all
+  select '6', 'Krovikas (enwis kodas)'
+  union all
+  select '7', 'Krovikas2 (enwis kodas)'
+  union all
+  select '8', 'Pradžios laikas'
+  union all
+  select '9', 'Pabaigos laikas'
+  union all
+  select '10', 'Padalinio kodas'
+  union all
+  select '11', 'Projekto kodas'
+  union all
+  select '12', 'DATOS: Metai'
+  union all
+  select '13', 'DATOS: Metai, mėnuo'
+  union all
+  select '14', 'DATOS: Mėnuo'
+  union all
+  select '15', '_LAIKAS: Automobiliai'
+  union all
+  select '16', '_LAIKAS: Vairuotojai'
+  union all
+  select '17', '_LAIKAS: Ekipažo krovikai'
+  union all
+  select '18', '_LAIKAS: Ekipažo darbuotojai'
+  union all
+  select '19', 'DATOS: Metai, ketvirtis'
+  union all
+  select '20', 'DATOS: Ketvirtis'
+  union all
+  select '21', 'DATOS: Metai, savaitė'
+  union all
+  select '22', 'DATOS: Savaitė'
+  union all
+  select '23', 'DATOS: Savaitės diena'
+  union all
+  select '24', 'LOG regionas'
+  union all
+  select '25', '_SVORIS: Bendras svoris'
+  union all
+  select '26', '_SVORIS: Mob dalies svoris'
+  union all
+  select '27', 'LRS regionas'
+  union all
+  select '28', 'LVRS - Log.Vad.Regionas (site)'
+  union all
+  select '29', 'LVRP - Log.Vad.Regionas (padalinys)'
+  union all
+  select '30', 'Emisijos klasė'
+  union all
+  select '31', 'Vairuotojas (tabelio nr)'
+  union all
+  select '32', 'Vairuotojas (Vardas Pavardė)'
+  union all
+  select '33', 'Krovikas (tabelio nr)'
+  union all
+  select '34', 'Krovikas (Vardas Pavardė)'
+  union all
+  select '35', 'Krovikas2 (tabelio nr)'
+  union all
+  select '36', 'Krovikas2 (Vardas Pavardė)'
+  union all
+  select '37', '_LAIKAS: Krovikas1'
+  union all
+  select '38', '_LAIKAS: Krovikas2'
+  union all
+  select '39', 'Darbuotojo ID'
+  union all
+  select '40', 'Darbuotojo Vardas Pavardė'
+  union all
+  select '41', 'Darbuotojo pareigybė (vair, krov1, krov2)'
+  union all
+  select '42', '_LAIKAS: Dirbtas darbo laikas'
+  union all
+  select '43', 'Darbuotojo pareigybė2 (vair, krov)'
+
+
+
+============================================================
+FILE: models\SilverTours\laik.sql
+============================================================
+    select '1' as "laikid" , 'Metai' as "laikname"
+    union all
+	select '2', 'Metai, mėnuo'
+    union all
+	select '3', 'Mėnuo'
+    union all
+	select '4', 'Ketvirtis'
+    union all
+	select '5', 'Metai, ketvirtis'
+    union all
+	select '6', 'nerodyti datos'
+
+
+============================================================
+FILE: models\SilverTours\map_doctype.sql
+============================================================
+    select '0' as "a" , 'Tour Plan' as "b"
+    union all
+	select '1', 'Tour'
+    union all
+	select '2', 'Municipal Tour Plan'
+    union all
+	select '3', 'Municipal Tour'
+    
+    
+
+
+============================================================
+FILE: models\SilverTours\map_emisijos_klase.sql
+============================================================
+/*
+MAPPING LOAD  
+        No_                                                                                                             as [Automobilio nr],   
+    if("Emission Class"=0, '', 'EURO ' & ("Emission Class"-1))  as [Emisijos klasė]
+FROM [lib://Qlik DATA (in_migle.purzelyte)/ENWIS/Vehicle.qvd]
+(qvd)
+;
+
+*/
+    
+SELECT
+    "Automobilio nr",
+    "Emisijos klasė"
+FROM (
+    SELECT
+        "No_" as "Automobilio nr",
+        case when "Emission Class"=0 then '' else concat('EURO ', ("Emission Class"-1)) end  as "Emisijos klasė",
+        ROW_NUMBER() OVER (PARTITION BY "No_" ORDER BY "Emission Class" ASC) AS row_num
+    FROM {{ source("ENWIS", "Vehicle") }} )
+WHERE row_num = 1
+
+
+============================================================
+FILE: models\SilverTours\map_log_region.sql
+============================================================
+/*
+MAPPING LOAD "PADALINIO KODAS",
+    "LOG Regionas"
+    
+FROM [lib://Qlik DATA (in_migle.purzelyte)/XLS/LOG PNL.xlsx]
+(ooxml, embedded labels, table is [LOG Regionai sanaudos])
+Where len(trim("LOG Regionas"))>0
+*/
+    
+SELECT
+    "PADALINIO KODAS",
+    "LOG Regionas"
+FROM (
+    SELECT
+        "PADALINIO KODAS" as "PADALINIO KODAS",
+        "LOG Regionas" as "LOG Regionas",
+        ROW_NUMBER() OVER (PARTITION BY "PADALINIO KODAS" ORDER BY "LOG Regionas" ASC) AS row_num
+    FROM {{ source("FF", "LOG Regionai sanaudos") }} 
+    Where len(trim("LOG Regionas"))>0)
+WHERE row_num = 1
+    
+
+
+============================================================
+FILE: models\SilverTours\map_log_region2.sql
+============================================================
+/*
+MAPPING LOAD 
+    "Padalinio kodas" & '|'&  "Projekto kodas",
+    "LOG Regionas"
+FROM [lib://Qlik DATA (in_migle.purzelyte)/XLS/LOG PNL.xlsx]
+(ooxml, embedded labels, table is [LOG Pajamos_EBITDA])
+Where len(trim("LOG Regionas"))>0
+;
+
+*/
+    
+SELECT
+    "Padalinio kodas | Projekto kodas",
+    "LOG Regionas"
+FROM (
+    SELECT
+        concat("Padalinio kodas",' | ',"Projekto kodas") as "Padalinio kodas | Projekto kodas",
+        "LOG Regionas" as "LOG Regionas",
+        ROW_NUMBER() OVER (PARTITION BY concat("Padalinio kodas",' | ',"Projekto kodas") ORDER BY "LOG Regionas" ASC) AS row_num
+    FROM DEV.FF."LOG Pajamos_EBITDA" 
+    Where len(trim("LOG Regionas"))>0)
+WHERE row_num = 1
+
+
+============================================================
+FILE: models\SilverTours\map_lrs.sql
+============================================================
+/*
+MMAPPING LOAD
+    "Site code",
+    LRS_Regionas
+FROM [lib://Qlik DATA (in_migle.purzelyte)/XLS/LOG PNL.xlsx]
+(ooxml, embedded labels, table is [LOG REGIONAI_SITE]);
+
+
+*/
+    
+SELECT
+    "Site code",
+    "LRS_Regionas"
+FROM (
+    SELECT
+        "Site code" as "Site code",
+        "LRS_Regionas" as "LRS_Regionas",
+        ROW_NUMBER() OVER (PARTITION BY "Site code" ORDER BY "LRS_Regionas" ASC) AS row_num
+    FROM {{ source("FF", "LOG REGIONAI_SITE") }} )
+WHERE row_num = 1
+
+
+============================================================
+FILE: models\SilverTours\map_lvrp.sql
+============================================================
+/*
+MAPPING LOAD
+    "Padalinio kodas",
+    LVRP
+ FROM [lib://Qlik DATA (in_migle.purzelyte)/XLS/LVRS LVRP.xlsx]
+(ooxml, embedded labels, header is 1 lines, table is [Pagal padalinį]);
+
+
+
+*/
+    
+SELECT
+    "Padalinio kodas",
+    "LVRP"
+FROM (
+    SELECT
+        "Padalinio kodas" as "Padalinio kodas",
+        "LVRP" as "LVRP",
+        ROW_NUMBER() OVER (PARTITION BY "Padalinio kodas" ORDER BY "LVRP" ASC) AS row_num
+    FROM {{ source("FF", "Pagal padalinį") }} )
+WHERE row_num = 1
+
+
+============================================================
+FILE: models\SilverTours\map_lvrs.sql
+============================================================
+/*
+MAPPING LOAD
+    "Site Code",
+    LVRS
+FROM [lib://Qlik DATA (in_migle.purzelyte)/XLS/LVRS LVRP.xlsx]
+(ooxml, embedded labels, header is 1 lines, table is [Pagal site]);
+
+
+
+*/
+    
+SELECT
+    "Site Code",
+    "LVRS"
+FROM (
+    SELECT
+        "Site Code" as "Site Code",
+        "LVRS" as "LVRS",
+        ROW_NUMBER() OVER (PARTITION BY "Site Code" ORDER BY "LVRS" ASC) AS row_num
+    FROM {{ source("FF", "Pagal site") }} )
+WHERE row_num = 1
+
+
+============================================================
+FILE: models\SilverTours\map_tabelis.sql
+============================================================
+/*
+
+MMAPPING LOAD
+    No_,
+    "Employee No_"
+FROM [lib://Qlik DATA (in_migle.purzelyte)/ENWIS/Waste Mgt_ Employee.qvd]
+(qvd);
+
+
+*/
+    
+SELECT
+    "No_",
+    "Employee No_"
+FROM (
+    SELECT
+        "No_" as "No_",
+        "Employee No_" as "Employee No_",
+        ROW_NUMBER() OVER (PARTITION BY "No_" ORDER BY "Employee No_" ASC) AS row_num
+    FROM {{ source("ENWIS", "Waste Mgt_ Employee") }})
+WHERE row_num = 1
+
+
+============================================================
+FILE: models\SilverTours\map_vardas.sql
+============================================================
+/*
+MAPPING LOAD
+    No_,
+    Name
+FROM [lib://Qlik DATA (in_migle.purzelyte)/ENWIS/Waste Mgt_ Employee.qvd]
+(qvd);
+
+
+*/
+    
+SELECT
+    "No_",
+    "Name"
+FROM (
+    SELECT
+        "No_" as "No_",
+        "Name" as "Name",
+        ROW_NUMBER() OVER (PARTITION BY "No_" ORDER BY "Name" ASC) AS row_num
+    FROM {{ source("ENWIS", "Waste Mgt_ Employee") }})
+WHERE row_num = 1
+
+
+============================================================
+FILE: models\SilverTours\SilverTours_map_status.sql
+============================================================
+ {{ config(alias='map_status') }}
+ 
+    select '0' as "a" , 'Executable' as "b"
+    union all
+	select '1', 'Completed'
+    union all
+	select '2', 'Archived'
+
+
+============================================================
+FILE: models\Source.yml
+============================================================
+sources:
+  - name: NAV
+    database: DEV
+    schema: NAV
+    tables:
+      - name: Bank Account
+        identifier: '"Bank Account"'
+      - name: COMPANY
+        identifier: COMPANY
+      - name: Company Information
+        identifier: '"Company Information"'
+      - name: Cust_ Ledger Entry
+        identifier: '"Cust_ Ledger Entry"'
+      - name: Customer
+        identifier: '"Customer"'
+      - name: Detailed Cust_ Ledg_ Entry
+        identifier: '"Detailed Cust_ Ledg_ Entry"'
+      - name: Detailed Vendor Ledg_ Entry
+        identifier: '"Detailed Vendor Ledg_ Entry"'
+      - name: Dimension Value
+        identifier: '"Dimension Value"'
+      - name: Fixed Asset
+        identifier: '"Fixed Asset"'
+      - name: G_L Entry
+        identifier: '"G_L Entry"'
+      - name: G_L Account
+        identifier: '"G_L Account"'  
+      - name: Issued Reminder Header
+        identifier: '"Issued Reminder Header"'
+      - name: Issued Reminder Line
+        identifier: '"Issued Reminder Line"'
+      - name: Vendor
+        identifier: '"Vendor"'
+      - name: Vendor Ledger Entry
+        identifier: '"Vendor Ledger Entry"'
+      - name: Ledger Entry Dimension
+        identifier: '"Ledger Entry Dimension"'
+      - name: Res_ Ledger Entry
+        identifier: '"Res_ Ledger Entry"'   
+  - name: FF
+    database: "{{ env_var('DBT_FF', 'DEV') }}"
+    schema: FF
+    tables:
+      - name: ACCRUALS
+        identifier: ACCRUALS
+      - name: BUSINESS_CODE
+        identifier: BUSINESS_CODE
+      - name: BUSINESS_NAME
+        identifier: BUSINESS_NAME
+      - name: COMPANY_NAME
+        identifier: COMPANY_NAME
+      - name: CONSOLIDATION_GROUP
+        identifier: CONSOLIDATION_GROUP
+      - name: CUSTOMER_VENDOR_NAME_PRIORITY
+        identifier: CUSTOMER_VENDOR_NAME_PRIORITY
+      - name: DEBTS_COMPANIES
+        identifier: DEBTS_COMPANIES
+      - name: FINANCE_BILLER_ACTUAL
+        identifier: FINANCE_BILLER_ACTUAL
+      - name: FINANCE_CUSTOMER_DEBT_STATUS
+        identifier: FINANCE_CUSTOMER_DEBT_STATUS
+      - name: FINANCE_CUSTOMER_DEBT_STATUS_LOG
+        identifier: FINANCE_CUSTOMER_DEBT_STATUS_LOG
+      - name: FINANCE_CUST_VEND_TYPE
+        identifier: FINANCE_CUST_VEND_TYPE
+      - name: LOCATION
+        identifier: LOCATION
+      - name: SUB_BUSINESS_CODE
+        identifier: SUB_BUSINESS_CODE
+      - name: SUB_BUSINESS_NAME
+        identifier: SUB_BUSINESS_NAME 
+      - name: LOG Regionai sanaudos
+        identifier: '"LOG Regionai sanaudos"'
+      - name: LOG Pajamos_EBITDA
+        identifier: '"LOG Pajamos_EBITDA"'
+      - name: LOG REGIONAI_SITE
+        identifier: '"LOG REGIONAI_SITE"'
+      - name: Pagal site
+        identifier: '"Pagal site"'
+      - name: Pagal padalinį
+        identifier: '"Pagal padalinį"'
+      - name: Automobilių būklė
+        identifier: '"Automobilių būklė"'     
+      - name: Vidines
+        identifier: '"Vidines"'       
+      - name: PROJEKTAS1
+        identifier: '"PROJEKTAS1"'  
+      - name: PROJEKTAS2
+        identifier: '"PROJEKTAS2"'
+      - name: Svarstykliu tipas
+        identifier: '"Svarstykliu tipas"'      
+      - name: Mar_Svar_uznulinimas
+        identifier: '"Mar_Svar_uznulinimas"' 
+      - name: Eco_klp_uznulinimas
+        identifier: '"Eco_klp_uznulinimas"' 
+      - name: Equipment tipai
+        identifier: '"Equipment tipai"'   
+      - name: Paslaugos
+        identifier: '"Paslaugos"'     
+      - name: Aiksteles
+        identifier: '"Aiksteles"'
+      - name: SCHEDULE
+        identifier: '"SCHEDULE"'    
+      - name: function
+        identifier: '"function"'   
+      - name: finance_actual2023
+        identifier: '"finance_actual2023"'   
+      - name: finance_off_balance
+        identifier: '"finance_off_balance"'   
+      - name: finance_manual_adjustments
+        identifier: '"finance_manual_adjustments"'   
+      - name: finance_duplicate_turnover
+        identifier: '"finance_duplicate_turnover"'   
+      - name: FINANCE_BUDGET_ESTIMATES
+        identifier: '"FINANCE_BUDGET_ESTIMATES"'  
+      - name: finance_allocation
+        identifier: '"finance_allocation"'
+      - name: snf_finance_allocation
+        identifier: '"snf_finance_allocation"'       
+      - name: region
+        identifier: '"region"'
+      - name: COA_OFF
+        identifier: '"COA_OFF"'
+      - name: ACCOUNT_CATEGORY
+        identifier: '"ACCOUNT_CATEGORY"'
+      - name: ACCOUNT_NAME
+        identifier: '"ACCOUNT_NAME"' 
+      - name: ACCOUNT_GROUPING
+        identifier: ACCOUNT_GROUPING
+      - name: company
+        identifier: '"company"'
+      - name: PARAMETERS_COMPANY
+        identifier: '"PARAMETERS_COMPANY"'
+      - name: FO_ACCOUNT_NO
+        identifier: '"FO_ACCOUNT_NO"'
+      - name: HR_DISMISSAL_REASONS
+        identifier: '"HR_DISMISSAL_REASONS"'
+      - name: HR_ADM_NOT_ADM
+        identifier: '"HR_ADM_NOT_ADM"'
+      - name: SITE_TYPE
+        identifier: '"SITE_TYPE"'
+      - name: LOAD_ENTRIES
+        identifier: '"LOAD_ENTRIES"'
+      - name: CUSTOMER_TYPE
+        identifier: '"CUSTOMER_TYPE"'  
+      - name: ENTRY_TYPE
+        identifier: '"ENTRY_TYPE"'      
+      - name: MASTERDATAMAPPING_SASKAITA_ISRASYTA
+        identifier: '"MASTERDATAMAPPING_SASKAITA_ISRASYTA"'
+      - name: MASTERDATAMAPPING_MATO_VIENETAS
+        identifier: '"MASTERDATAMAPPING_MATO_VIENETAS"'
+      - name: MASTERDATAMAPPING_KLIENTO_KONTEINERIS
+        identifier: '"MASTERDATAMAPPING_KLIENTO_KONTEINERIS"'
+      - name: MASTERDATAMAPPING_DOKUMENTO_TIPAS
+        identifier: '"MASTERDATAMAPPING_DOKUMENTO_TIPAS"'
+  - name: ENWIS
+    database: DEV
+    schema: ENWIS
+    tables:
+      - name: Tour
+        identifier: '"Tour"'        
+      - name: Vehicle
+        identifier: '"Vehicle"'
+      - name: Waste Mgt_ Employee
+        identifier: '"Waste Mgt_ Employee"'
+      - name: Transport Ledger Entry
+        identifier: '"Transport Ledger Entry"'
+      - name: Trouble Ledger Entry
+        identifier: '"Trouble Ledger Entry"'
+      - name: Waste Management Line
+        identifier: '"Waste Management Line_LIM"' 
+      - name: Personnel Ledger Entry
+        identifier: '"Personnel Ledger Entry"'         
+      - name: Customer
+        identifier: '"Customer"'   
+      - name: Waste Management Header
+        identifier: '"Waste Management Header"'   
+      - name: Service
+        identifier: '"Service"'     
+      - name: G_L Account
+        identifier: '"G_L Account"'      
+      - name: Sales Invoice Header
+        identifier: '"Sales Invoice Header"'  
+      - name: Sales Invoice Line
+        identifier: '"Sales Invoice Line"'    
+      - name: Sales Cr_Memo Header
+        identifier: '"Sales Cr_Memo Header"'  
+      - name: Sales Cr_Memo Line
+        identifier: '"Sales Cr_Memo Line"'     
+      - name: Purch_ Inv_ Header
+        identifier: '"Purch_ Inv_ Header"'  
+      - name: Purch_ Inv_ Line
+        identifier: '"Purch_ Inv_ Line"'
+      - name: Purch_ Cr_ Memo Hdr_
+        identifier: '"Purch_ Cr_ Memo Hdr_"'  
+      - name: Purch_ Cr_ Memo Line
+        identifier: '"Purch_ Cr_ Memo Line"'
+      - name: Vendor
+        identifier: '"Vendor"'   
+      - name: Global Int_ Material Catalog
+        identifier: '"Global Int_ Material Catalog"'
+      - name: Location
+        identifier: '"Location"'   
+      - name: Waste Value Entry
+        identifier: '"Waste Value Entry"'   
+      - name: Waste Entry
+        identifier: '"Waste Entry"' 
+      - name: Waste Ledger Entry
+        identifier: '"Waste Ledger Entry"'  
+      - name: Weighbridge Ticket
+        identifier: '"Weighbridge Ticket"'   
+      - name: Equipment Ledger Entry
+        identifier: '"Equipment Ledger Entry"'   
+      - name: Invoice Ledger Entry   
+        identifier: '"Invoice Ledger Entry"'   
+  - name: PROG
+    database: DEV
+    schema: PROG
+    tables:
+      - name: SENSORS
+        identifier: '"SENSORS"'  
+      - name: DOWNTIME_CLASSIFICATION
+        identifier: '"DOWNTIME_CLASSIFICATION"'     
+      - name: USERS
+        identifier: '"USERS"'
+      - name: NEW_STAT_REP
+        identifier: '"NEW_STAT_REP"'
+      - name: NEW_WORK_DURING_BREAKS_REP
+        identifier: '"NEW_WORK_DURING_BREAKS_REP"'
+      - name: NEW_DOWNTIME_REP
+        identifier: '"NEW_DOWNTIME_REP"'    
+  - name: ASMIL
+    database: DEV
+    schema: ASMIL
+    tables:
+      - name: ROUTE_HISTORY
+        identifier: '"ROUTE_HISTORY"'
+      - name: ROUTE
+        identifier: '"ROUTE"'
+      - name: PERIODIC_ROUTE_PARAMETERS
+        identifier: '"PERIODIC_ROUTE_PARAMETERS"'
+      - name: USER
+        identifier: '"USER"'
+      - name: TERRITORY
+        identifier: '"TERRITORY"'
+      - name: DEPARTMENT
+        identifier: '"DEPARTMENT"' 
+      - name: VEHICLE
+        identifier: '"VEHICLE"' 
+      - name: CLASSIFIER
+        identifier: '"CLASSIFIER"'
+      - name: STAFF
+        identifier: '"STAFF"'
+      - name: WASTE_ORIGIN
+        identifier: '"WASTE_ORIGIN"'
+      - name: ROUTE_HISTORY_STAFF
+        identifier: '"ROUTE_HISTORY_STAFF"'
+      - name: ROUTE_MONITORINGS
+        identifier: '"ROUTE_MONITORINGS"'
+      - name: PICKUP_HISTORY
+        identifier: '"PICKUP_HISTORY"' 
+      - name: CLIENT
+        identifier: '"CLIENT"'
+      - name: ORDER
+        identifier: '"ORDER"'
+      - name: CONTRACT_LINES
+        identifier: '"CONTRACT_LINES"'
+      - name: REPORT_WASTE_DISPOSAL
+        identifier: '"REPORT_WASTE_DISPOSAL"' 
+      - name: BILL_INVOICE
+        identifier: '"BILL_INVOICE"'   
+      - name: CONTRACTS
+        identifier: '"CONTRACTS"'
+      - name: EMPTYED_VOLUME
+        identifier: '"EMPTYED_VOLUME"'
+      - name: PICKUP_OBJECTS
+        identifier: '"PICKUP_OBJECTS"'  
+      - name: WASTE_OBJECT_CONTRACT_LINES
+        identifier: '"WASTE_OBJECT_CONTRACT_LINES"' 
+      - name: WASTE_LIST
+        identifier: '"WASTE_LIST"'
+      - name: BILL_TOLL_OBJECT
+        identifier: '"BILL_TOLL_OBJECT"'
+      - name: BILL_CONTRACT
+        identifier: '"BILL_CONTRACT"'
+      - name: BILL_PERSON
+        identifier: '"BILL_PERSON"'
+      - name: BILL_CONTRACTOBJECTSWASTEOBJECT
+        identifier: '"BILL_CONTRACTOBJECTSWASTEOBJECT"'   
+      - name: DUMPSTER
+        identifier: '"DUMPSTER"'
+      - name: BILL_CONTRACTOBJECT
+        identifier: '"BILL_CONTRACTOBJECT"' 
+      - name: WASTE_OBJECT
+        identifier: '"WASTE_OBJECT"'   
+      - name: DUMPSTER_TYPE
+        identifier: '"DUMPSTER_TYPE"'
+      - name: BILL_ADDRESS_FIELDS
+        identifier: '"BILL_ADDRESS_FIELDS"'
+      - name: BILL_CONTRACT_ATTRIB_SETTINGS_VALUE
+        identifier: '"BILL_CONTRACT_ATTRIB_SETTINGS_VALUE"'
+      - name: BILL_CONTRACT_ATTRIB_SETTING
+        identifier: '"BILL_CONTRACT_ATTRIB_SETTING"'  
+      - name: BILL_CLASSIFIER
+        identifier: '"BILL_CLASSIFIER"'
+      - name: BILL_INVOICELINE
+        identifier: '"BILL_INVOICELINE"'
+      - name: SUPPLIER_OPERATIONS
+        identifier: '"SUPPLIER_OPERATIONS"'   
+  - name: FO
+    database: DEV
+    schema: D365T
+    tables:
+      - name: MSERP_DIRPARTYTABLEBIENTITY_V
+        identifier: '"MSERP_DIRPARTYTABLEBIENTITY_V"'
+      - name: MSERP_ASSETTABLEBIENTITY_V
+        identifier: '"MSERP_ASSETTABLEBIENTITY_V"'
+      - name: MSERP_BANKACCOUNTTABLEBIENTITY_V
+        identifier: '"MSERP_BANKACCOUNTTABLEBIENTITY_V"'
+      - name: MSERP_CUSTSETTLEMENTBIENTITY_V
+        identifier: '"MSERP_CUSTSETTLEMENTBIENTITY_V"'
+      - name: MSERP_CUSTTABLEBIENTITY_V
+        identifier: '"MSERP_CUSTTABLEBIENTITY_V"'
+      - name: MSERP_CUSTTRANSBIENTITY_V
+        identifier: '"MSERP_CUSTTRANSBIENTITY_V"'
+      - name: MSERP_DIMENSIONATTRIBUTEBIENTITY_V
+        identifier: '"MSERP_DIMENSIONATTRIBUTEBIENTITY_V"'
+      - name: MSERP_GENERALJOURNALACCOUNTENTRYBIENTITY_V
+        identifier: '"MSERP_GENERALJOURNALACCOUNTENTRYBIENTITY_V"'
+      - name: MSERP_VENDSETTLEMENTBIENTITY_V
+        identifier: '"MSERP_VENDSETTLEMENTBIENTITY_V"'
+      - name: MSERP_VENDTABLEBIENTITY_V
+        identifier: '"MSERP_VENDTABLEBIENTITY_V"'
+      - name: MSERP_VENDTRANSBIENTITY_V
+        identifier: '"MSERP_VENDTRANSBIENTITY_V"'
+      - name: MSERP_DIMENSIONATTRIBUTEVALUECOMBINATIONBIENTITY_V
+        identifier: '"MSERP_DIMENSIONATTRIBUTEVALUECOMBINATIONBIENTITY_V"'
+      - name: MSERP_GENERALJOURNALENTRYBIENTITY_V
+        identifier: '"MSERP_GENERALJOURNALENTRYBIENTITY_V"'
+      - name: MSERP_CUSTINVOICEJOURBIENTITY_V
+        identifier: '"MSERP_CUSTINVOICEJOURBIENTITY_V"'
+      - name: MSERP_VENDINVOICEJOURBIENTITY_V
+        identifier: '"MSERP_VENDINVOICEJOURBIENTITY_V"'
+      - name: MSERP_MAINACCOUNTBIENTITY_V
+        identifier: '"MSERP_MAINACCOUNTBIENTITY_V"'
+  - name: BC
+    database: DEV
+    schema: BC
+    tables:
+      - name: ASMENS_KORTELE
+        identifier: '"ASMENS_KORTELE"'
+      - name: COMPANY
+        identifier: '"COMPANY"'
+      - name: DARBO_SANTYKIU_KORTELE
+        identifier: '"DARBO_SANTYKIU_KORTELE"'
+      - name: NEATVYKIMU_DUOMENYS
+        identifier: '"NEATVYKIMU_DUOMENYS"'
+      - name: PASKYRIMU_SARASAS
+        identifier: '"PASKYRIMU_SARASAS"'
+      - name: PAYMENT_LEDGER_ENTRIES
+        identifier: '"PAYMENT_LEDGER_ENTRIES"'
+      - name: PERSON_DISABILITY
+        identifier: '"PERSON_DISABILITY"'
+      - name: PERSON_MEDICAL_EXAMINATIONS
+        identifier: '"PERSON_MEDICAL_EXAMINATIONS"'
+      - name: PERSON_RELATIVE
+        identifier: '"PERSON_RELATIVE"'
+      - name: PRISKAIT_ISSKAIT_IRASAI
+        identifier: '"PRISKAIT_ISSKAIT_IRASAI"'
+      - name: RESERVE_LEDGER_ENTRIES
+        identifier: '"RESERVE_LEDGER_ENTRIES"'
+      - name: TABELIO_IRASAI
+        identifier: '"TABELIO_IRASAI"'
+      - name: WORK_RELATION_LIST
+        identifier: '"WORK_RELATION_LIST"'
+  - name: FOD
+    database: DEV
+    schema: FO_V
+    tables:
+      - name: DIRPARTYTABLE
+        identifier: '"DIRPARTYTABLE"'
+      - name: ENTASSETOBJECTTABLE
+        identifier: '"ENTASSETOBJECTTABLE"'
+      - name: BANKACCOUNTTABLE
+        identifier: '"BANKACCOUNTTABLE"'
+      - name: CUSTSETTLEMENT
+        identifier: '"CUSTSETTLEMENT"'
+      - name: CUSTTABLE
+        identifier: '"CUSTTABLE"'
+      - name: CUSTTRANS
+        identifier: '"CUSTTRANS"'
+      - name: DIMENSIONATTRIBUTEVALUE
+        identifier: '"DIMENSIONATTRIBUTEVALUE"'
+      - name: GENERALJOURNALACCOUNTENTRY
+        identifier: '"GENERALJOURNALACCOUNTENTRY"'
+      - name: VENDSETTLEMENT
+        identifier: '"VENDSETTLEMENT"'
+      - name: VENDTABLE
+        identifier: '"VENDTABLE"'
+      - name: VENDTRANS
+        identifier: '"VENDTRANS"'
+      - name: DIMENSIONATTRIBUTEVALUECOMBINATION
+        identifier: '"DIMENSIONATTRIBUTEVALUECOMBINATION"'
+      - name: GENERALJOURNALENTRY
+        identifier: '"GENERALJOURNALENTRY"'
+      - name: CUSTINVOICEJOUR
+        identifier: '"CUSTINVOICEJOUR"'
+      - name: VENDINVOICEJOUR
+        identifier: '"VENDINVOICEJOUR"'
+      - name: MAINACCOUNT
+        identifier: '"MAINACCOUNT"'
+      - name: DIRPARTYLOCATION
+        identifier: '"DIRPARTYLOCATION"'
+      - name: COMPANYINFO
+        identifier: '"COMPANYINFO"'
+      - name: ASSETTABLE
+        identifier: '"ASSETTABLE"'
+      - name: GLOBAL_OPTIONSET_METADA
+        identifier: '"GLOBAL_OPTIONSET_METADA"'
+      - name: LOGISTICSPOSTALADDRESS
+        identifier: '"LOGISTICSPOSTALADDRESS"' 
+      - name: LOGISTICSELECTRONICADDRESS
+        identifier: '"LOGISTICSELECTRONICADDRESS"'   
+      - name: ENTASSETOBJECTTYPE
+        identifier: '"ENTASSETOBJECTTYPE"'
+      - name: ENTASSETOBJECTLIFECYCLEMODEL
+        identifier: '"ENTASSETOBJECTLIFECYCLEMODEL"'
+      - name: ENTASSETMODEL
+        identifier: '"ENTASSETMODEL"'
+      - name: ENTASSETPRODUCT
+        identifier: '"ENTASSETPRODUCT"'
+      - name: ENTASSETFUNCTIONALLOCATION
+        identifier: '"ENTASSETFUNCTIONALLOCATION"'
+      - name: ENTASSETOBJECTATTRIBUTE
+        identifier: '"ENTASSETOBJECTATTRIBUTE"'
+      - name: HCMWORKER
+        identifier: '"HCMWORKER"'
+      - name: DIRPERSON
+        identifier: '"DIRPERSON"'
+      - name: SALESTABLE
+        identifier: '"SALESTABLE"'
+  - name: SERVICE_RENDERED
+    database: "{{ env_var('DBT_FF', 'DEV') }}"
+    schema: GOLD_SERVICE_RENDERED
+    tables:
+      - name: DATA
+        identifier: DATA
+
+
+============================================================
+FILE: dbt_project.yml
+============================================================
+
+# Name your project! Project names should contain only lowercase characters
+# and underscores. A good package name should reflect your organization's
+# name or the intended use of these models
+name: 'Ecoservice'
+version: '1.0.0'
+config-version: 2
+
+# This setting configures which "profile" dbt uses for this project.
+profile: 'default'
+
+# These configurations specify where dbt should look for different types of files.
+# The `model-paths` config, for example, states that models in this project can be
+# found in the "models/" directory. You probably won't need to change these!
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+target-path: "target"  # directory which will store compiled SQL files
+clean-targets:         # directories to be removed by `dbt clean`
+  - "target"
+  - "dbt_packages"
+
+
+# Configuring models
+# Full documentation: https://docs.getdbt.com/docs/configuring-models
+
+# In dbt, the default materialization for a model is a view. This means, when you run 
+# dbt run or dbt build, all of your models will be built as a view in your data platform. 
+# The configuration below will override this setting for models in the example folder to 
+# instead be materialized as tables. Any models you add to the root of the models folder will 
+# continue to be built as views. These settings can be overridden in the individual model files
+# using the `{{ config(...) }}` macro.
+
+models:
+  Ecoservice:
+    +transient: false
+    +materialized: 'table'
+    SilverTours:
+      +schema: SILVER_TOURS
+    GoldTours:
+      +schema: GOLD_TOURS
+    AS_GoldTours:
+      +schema: AS_GOLD_TOURS
+    Gold_ENW_Tours:
+      +schema: ENW_GOLD_TOURS 
+   
+
+
+============================================================
+FILE: profiles.yml
+============================================================
+default:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      role: ACCOUNTADMIN
+      warehouse: COMPUTE_WH
+      database: DEV
+      schema: GOLD_DEBTS
+      account: 'ecoservice-prod'
+      user: SVC_GITHUB
+      authenticator: snowflake
+      private_key_path: private_key.pem
+

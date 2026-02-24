@@ -1,0 +1,13 @@
+default:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      role: ACCOUNTADMIN
+      warehouse: COMPUTE_WH
+      database: DEV
+      schema: GOLD_DEBTS
+      account: 'ecoservice-prod'
+      user: SVC_GITHUB
+      authenticator: snowflake
+      private_key_path: private_key.pem
